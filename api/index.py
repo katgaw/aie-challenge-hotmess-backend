@@ -1,86 +1,61 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from openai import OpenAI
 import os
-import json
-from urllib import request as urllib_request, error
+from dotenv import load_dotenv
 
-# Load .env locally if available; Vercel uses project env vars
-try:
-    from dotenv import load_dotenv  # type: ignore
-    load_dotenv()
-except Exception:
-    pass
-
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+load_dotenv()
 
 app = FastAPI()
 
+# CORS so the frontend can talk to backend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*"]
 )
 
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
 class ChatRequest(BaseModel):
-    developer_message: str
-    user_message: str
-    model: str = "gpt-4o-mini"
-
-@app.post("/api/chat")
-async def chat(request: ChatRequest):
-    if not OPENAI_API_KEY:
-        raise HTTPException(status_code=500, detail="Missing OPENAI_API_KEY. Set it in your environment or .env file.")
-    
-    payload = {
-        "model": request.model,
-        "messages": [
-            {"role": "system", "content": request.developer_message},
-            {"role": "user", "content": request.user_message}
-        ],
-    }
-
-    req = urllib_request.Request(
-        "https://api.openai.com/v1/chat/completions",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {OPENAI_API_KEY}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-
-    try:
-        with urllib_request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            return {"response": data["choices"][0]["message"]["content"]}
-    except error.HTTPError as e:
-        try:
-            body = e.read().decode("utf-8")
-        except Exception:
-            body = str(e)
-        raise HTTPException(status_code=500, detail=f"OpenAI API error: {e.code} {e.reason}\n{body}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Request failed: {e}")
+    message: str
 
 @app.get("/")
-async def root():
-    return Response(status_code=204)
-
-@app.get("/api/health")
-async def health_check():
+def root():
     return {"status": "ok"}
 
-@app.get("/favicon.ico")
-async def favicon():
-    return Response(status_code=204)
+@app.post("/api/chat")
+def chat(request: ChatRequest):
+    if not os.getenv("OPENAI_API_KEY"):
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY not configured")
+    
+    try:
+        user_message = request.message
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a supportive mental coach."},
+                {"role": "user", "content": user_message}
+            ]
+        )
+        return {"reply": response.choices[0].message.content}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error calling OpenAI API: {str(e)}")
 
-# Vercel serverless function handler
-from mangum import Mangum
-handler = Mangum(app, lifespan="off")
+@app.post("/chat")
+def chat_alt(request: ChatRequest):
+    """Alternative route without /api prefix"""
+    return chat(request)
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+@app.get("/api/chat")
+def chat_get():
+    return {
+        "error": "This endpoint requires a POST request",
+        "example": {
+            "method": "POST",
+            "url": "/api/chat",
+            "body": {"message": "hi"}
+        }
+    }
